@@ -1,0 +1,30 @@
+{
+  "name": "caffonia-bot",
+  "version": "1.0.0",
+  "description": "Bot de música para Discord - Caffonía",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "music",
+    "caffonia"
+  ],
+  "author": "Caffonía",
+  "license": "MIT",
+  "dependencies": {
+    "@discordjs/voice": "^0.16.1",
+    "@distube/ytdl-core": "^4.16.12",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
+    "ffmpeg-static": "^5.2.0",
+    "libsodium-wrappers": "^0.7.15",
+    "play-dl": "^1.9.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
