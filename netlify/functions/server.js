@@ -4,7 +4,15 @@ const ytdl = require('@distube/ytdl-core');
 const { search } = require('youtube-search-without-api-key');
 
 // Configuração
-const config = require('./config.js');
+const config = {
+    token: process.env.DISCORD_TOKEN,
+    clientId: process.env.DISCORD_CLIENT_ID,
+    prefix: '!',
+    music: {
+        maxQueueSize: 99,
+        defaultVolume: 50
+    }
+};
 
 // Cliente Discord
 const client = new Client({
