@@ -2,7 +2,16 @@ const { Client, GatewayIntentBits, Events, ActivityType } = require('discord.js'
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const { search } = require('play-dl');
-const config = require('./config');
+// Configuração - usa variáveis de ambiente se disponíveis, senão usa config.js
+const config = process.env.DISCORD_TOKEN ? {
+    token: process.env.DISCORD_TOKEN,
+    clientId: process.env.DISCORD_CLIENT_ID,
+    prefix: '!',
+    music: {
+        maxQueueSize: 99,
+        defaultVolume: 50
+    }
+} : require('./config');
 
 // Criar cliente Discord
 const client = new Client({
