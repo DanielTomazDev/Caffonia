@@ -1,6 +1,5 @@
 const { Client, GatewayIntentBits, Events, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection } = require('@discordjs/voice');
-const ytdl = require('@distube/ytdl-core');
 const { search } = require('youtube-search-without-api-key');
 
 // Configuração
@@ -81,68 +80,20 @@ const rest = new REST({ version: '10' }).setToken(config.token);
     }
 })();
 
-// Função para tocar música
-async function playMusic(guildId, voiceChannel, textChannel, song) {
+// Função para buscar música
+async function searchMusic(query) {
     try {
-        let connection = getVoiceConnection(guildId);
-        
-        if (!connection) {
-            connection = joinVoiceChannel({
-                channelId: voiceChannel.id,
-                guildId: guildId,
-                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            });
+        const searchResults = await search(query, { maxResults: 1 });
+        if (searchResults.length === 0) {
+            throw new Error('Nenhuma música encontrada!');
         }
-
-        const player = createAudioPlayer();
-        connection.subscribe(player);
-
-        // Verificar se é URL do YouTube ou termo de busca
-        let url = song;
-        if (!song.startsWith('http')) {
-            const searchResults = await search(song, { maxResults: 1 });
-            if (searchResults.length === 0) {
-                throw new Error('Nenhuma música encontrada!');
-            }
-            url = searchResults[0].url;
-        }
-
-        // Criar stream de áudio
-        const stream = ytdl(url, {
-            filter: 'audioonly',
-            highWaterMark: 1 << 25,
-            quality: 'highestaudio'
-        });
-
-        const resource = createAudioResource(stream);
-        player.play(resource);
-
-        player.on(AudioPlayerStatus.Playing, () => {
-            console.log(`🎵 Tocando: ${song}`);
-        });
-
-        player.on(AudioPlayerStatus.Idle, () => {
-            const queue = musicQueues.get(guildId);
-            if (queue && queue.length > 0) {
-                const nextSong = queue.shift();
-                playMusic(guildId, voiceChannel, textChannel, nextSong);
-            } else {
-                connection.destroy();
-                musicQueues.delete(guildId);
-            }
-        });
-
-        player.on('error', error => {
-            console.error('❌ Erro no player:', error);
-            const queue = musicQueues.get(guildId);
-            if (queue && queue.length > 0) {
-                const nextSong = queue.shift();
-                playMusic(guildId, voiceChannel, textChannel, nextSong);
-            }
-        });
-
+        return {
+            title: searchResults[0].title,
+            url: searchResults[0].url,
+            thumbnail: searchResults[0].thumbnail
+        };
     } catch (error) {
-        console.error('❌ Erro ao tocar música:', error);
+        console.error('❌ Erro ao buscar música:', error);
         throw error;
     }
 }
@@ -164,105 +115,57 @@ client.on(Events.InteractionCreate, async interaction => {
             case 'play':
                 const music = interaction.options.getString('musica');
                 
-                if (!member.voice.channel) {
-                    await interaction.reply('❌ Você precisa estar em um canal de voz!');
-                    return;
-                }
-
-                const permissions = member.voice.channel.permissionsFor(interaction.guild.members.me);
-                if (!permissions.has('Connect') || !permissions.has('Speak')) {
-                    await interaction.reply('❌ Eu não tenho permissão para conectar ou falar neste canal!');
-                    return;
-                }
-
                 await interaction.reply('🔍 Procurando música...');
                 
                 try {
-                    await playMusic(guildId, member.voice.channel, interaction.channel, music);
-                    await interaction.followUp(`🎵 Tocando: ${music}`);
+                    const musicInfo = await searchMusic(music);
+                    await interaction.followUp(`🎵 **${musicInfo.title}**\n🔗 ${musicInfo.url}\n\n⚠️ **Nota**: A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!`);
                 } catch (error) {
-                    await interaction.followUp('❌ Erro ao reproduzir a música!');
+                    await interaction.followUp('❌ Nenhuma música encontrada!');
                 }
                 break;
 
             case 'pause':
-                const connection = getVoiceConnection(guildId);
-                if (connection) {
-                    connection.state.subscription.player.pause();
-                    await interaction.reply('⏸️ Música pausada!');
-                } else {
-                    await interaction.reply('❌ Nenhuma música tocando!');
-                }
+                await interaction.reply('⏸️ **Comando pausa**\n⚠️ A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!');
                 break;
 
             case 'resume':
-                const connection2 = getVoiceConnection(guildId);
-                if (connection2) {
-                    connection2.state.subscription.player.unpause();
-                    await interaction.reply('▶️ Música retomada!');
-                } else {
-                    await interaction.reply('❌ Nenhuma música pausada!');
-                }
+                await interaction.reply('▶️ **Comando retomar**\n⚠️ A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!');
                 break;
 
             case 'skip':
-                const connection3 = getVoiceConnection(guildId);
-                if (connection3) {
-                    connection3.state.subscription.player.stop();
-                    await interaction.reply('⏭️ Música pulada!');
-                } else {
-                    await interaction.reply('❌ Nenhuma música tocando!');
-                }
+                await interaction.reply('⏭️ **Comando pular**\n⚠️ A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!');
                 break;
 
             case 'stop':
-                const connection4 = getVoiceConnection(guildId);
-                if (connection4) {
-                    connection4.destroy();
-                    musicQueues.delete(guildId);
-                    await interaction.reply('⏹️ Música parada e fila limpa!');
-                } else {
-                    await interaction.reply('❌ Nenhuma música tocando!');
-                }
+                await interaction.reply('⏹️ **Comando parar**\n⚠️ A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!');
                 break;
 
             case 'queue':
-                const queue = musicQueues.get(guildId) || [];
-                if (queue.length === 0) {
-                    await interaction.reply('📝 Fila vazia!');
-                } else {
-                    const queueList = queue.map((song, index) => `${index + 1}. ${song}`).join('\n');
-                    await interaction.reply(`📝 Fila de músicas:\n${queueList}`);
-                }
+                await interaction.reply('📝 **Fila de músicas**\n⚠️ A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!');
                 break;
 
             case 'volume':
                 const volume = interaction.options.getInteger('nivel');
-                const connection5 = getVoiceConnection(guildId);
-                if (connection5) {
-                    connection5.state.subscription.player.resource.volume?.setVolume(volume / 100);
-                    await interaction.reply(`🔊 Volume ajustado para ${volume}%!`);
-                } else {
-                    await interaction.reply('❌ Nenhuma música tocando!');
-                }
+                await interaction.reply(`🔊 **Volume ${volume}%**\n⚠️ A reprodução de áudio não está disponível no Netlify. Use o bot local para reproduzir música!`);
                 break;
 
             case 'help':
                 const helpText = `🎵 Caffonía - Bot de Música para Discord
 
-/play <música> - Toca uma música
-/pause - Pausa a música
-/resume - Retoma a música
-/skip - Pula a música atual
-/stop - Para a música e limpa a fila
-/queue - Mostra a fila de músicas
-/volume <0-100> - Ajusta o volume
+/play <música> - Busca uma música no YouTube
+/pause - Comando pausa (apenas local)
+/resume - Comando retomar (apenas local)
+/skip - Comando pular (apenas local)
+/stop - Comando parar (apenas local)
+/queue - Mostra fila (apenas local)
+/volume <0-100> - Ajusta volume (apenas local)
 /help - Mostra esta ajuda
 
-Status: Bot funcionando com áudio real! ✅
-API: @discordjs/voice + @distube/ytdl-core ✅
-Conexão: Entra em canais de voz ✅
-Áudio: Reprodução real funcionando ✅
+Status: Bot online no Netlify! ✅
+Funcionalidade: Busca de músicas ✅
+Limitação: Reprodução apenas local ⚠️
+Para reproduzir: Use o bot local! 🎶
 
 Desenvolvido com ❤️ por Daniel Tomaz`;
                 await interaction.reply(helpText);
