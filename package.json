@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "build": "echo 'Build completed'",
+    "build": "npm install && echo 'Build completed'",
     "netlify:dev": "netlify dev"
   },
   "keywords": [
