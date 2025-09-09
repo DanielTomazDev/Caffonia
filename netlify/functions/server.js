@@ -1,8 +1,7 @@
 const { Client, GatewayIntentBits, Events, SlashCommandBuilder, REST, Routes } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, getVoiceConnection } = require('@discordjs/voice');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const { search } = require('youtube-search-without-api-key');
-const ffmpeg = require('ffmpeg-static');
 
 // Configuração
 const config = require('./config.js');
