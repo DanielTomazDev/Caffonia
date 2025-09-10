@@ -1,412 +1,867 @@
-const { Client, GatewayIntentBits, Events, ActivityType } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
+const { Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, getVoiceConnection } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const { search } = require('play-dl');
+const SpotifyWebApi = require('spotify-web-api-node');
+const cron = require('node-cron');
+const fs = require('fs').promises;
+const path = require('path');
+
 // Configuração - usa variáveis de ambiente se disponíveis, senão usa config.js
 const config = process.env.DISCORD_TOKEN ? {
     token: process.env.DISCORD_TOKEN,
     clientId: process.env.DISCORD_CLIENT_ID,
     prefix: '!',
     music: {
-        maxQueueSize: 99,
-        defaultVolume: 50
+        maxQueueSize: 100,
+        defaultVolume: 50,
+        maxPlaylistSize: 50
+    },
+    spotify: {
+        clientId: process.env.SPOTIFY_CLIENT_ID,
+        clientSecret: process.env.SPOTIFY_CLIENT_SECRET
+    },
+    features: {
+        enableSpotify: true,
+        enableYoutube: true,
+        enablePlaylists: true,
+        enableRadio: true,
+        enableTimer: true,
+        enableFavorites: true,
+        enableMoodSystem: true
     }
 } : require('./config');
 
-// Criar cliente Discord
+// Cliente Discord
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
     ]
 });
 
-// Sistema de fila de música
-const musicQueues = new Map();
+// Cliente Spotify
+let spotifyApi = null;
+if (config.features.enableSpotify && config.spotify.clientId) {
+    spotifyApi = new SpotifyWebApi({
+        clientId: config.spotify.clientId,
+        clientSecret: config.spotify.clientSecret
+    });
+    
+    // Autenticar com Spotify
+    spotifyApi.clientCredentialsGrant()
+        .then(data => {
+            spotifyApi.setAccessToken(data.body['access_token']);
+            console.log('✅ Spotify conectado!');
+        })
+        .catch(err => {
+            console.log('❌ Erro ao conectar com Spotify:', err);
+        });
+}
 
-// Estrutura de fila de música
-class MusicQueue {
+// Sistemas de dados
+const musicQueues = new Map();
+const userPlaylists = new Map();
+const userFavorites = new Map();
+const userStats = new Map();
+const timers = new Map();
+const radioStations = new Map();
+
+// Estrutura de fila de música aprimorada
+class EnhancedMusicQueue {
     constructor(guildId, voiceChannel, textChannel) {
         this.guildId = guildId;
         this.voiceChannel = voiceChannel;
         this.textChannel = textChannel;
         this.songs = [];
         this.currentSong = null;
+        this.player = createAudioPlayer();
         this.connection = null;
-        this.player = null;
-        this.volume = 0.5;
-        this.isPlaying = false;
-        this.isPaused = false;
+        this.volume = config.music.defaultVolume;
+        this.loop = 'off'; // off, song, queue
+        this.shuffle = false;
+        this.autoplay = false;
+        this.mood = 'normal';
+        this.quality = 'high';
+        this.history = [];
+        
+        this.setupEventListeners();
     }
-
+    
+    setupEventListeners() {
+        this.player.on(AudioPlayerStatus.Playing, () => {
+            console.log(`🎵 Tocando: ${this.currentSong?.title}`);
+            this.updateStats();
+        });
+        
+        this.player.on(AudioPlayerStatus.Idle, () => {
+            this.playNext();
+        });
+        
+        this.player.on('error', error => {
+            console.error('❌ Erro no player:', error);
+            this.playNext();
+        });
+    }
+    
     async addSong(song) {
+        if (this.songs.length >= config.music.maxQueueSize) {
+            throw new Error('Fila cheia! Máximo de ' + config.music.maxQueueSize + ' músicas.');
+        }
+        
         this.songs.push(song);
-        if (!this.isPlaying && this.songs.length === 1) {
-            this.play();
+        
+        if (!this.currentSong) {
+            await this.playNext();
         }
     }
-
-    async play() {
-        if (this.songs.length === 0) {
-            this.isPlaying = false;
+    
+    async playNext() {
+        if (this.loop === 'song' && this.currentSong) {
+            await this.playSong(this.currentSong);
             return;
         }
-
-        this.currentSong = this.songs.shift();
-        this.isPlaying = true;
-        this.isPaused = false;
-
+        
+        let nextSong = null;
+        
+        if (this.songs.length > 0) {
+            if (this.shuffle) {
+                const randomIndex = Math.floor(Math.random() * this.songs.length);
+                nextSong = this.songs.splice(randomIndex, 1)[0];
+            } else {
+                nextSong = this.songs.shift();
+            }
+        } else if (this.loop === 'queue' && this.history.length > 0) {
+            this.songs = [...this.history];
+            this.history = [];
+            nextSong = this.songs.shift();
+        } else if (this.autoplay && this.currentSong) {
+            nextSong = await this.getRecommendation();
+        }
+        
+        if (nextSong) {
+            if (this.currentSong) {
+                this.history.push(this.currentSong);
+            }
+            await this.playSong(nextSong);
+        } else {
+            this.currentSong = null;
+            if (this.connection) {
+                this.connection.destroy();
+            }
+            musicQueues.delete(this.guildId);
+        }
+    }
+    
+    async playSong(song) {
         try {
-            // Conectar ao canal de voz usando @discordjs/voice
+            this.currentSong = song;
+            
             if (!this.connection) {
                 this.connection = joinVoiceChannel({
                     channelId: this.voiceChannel.id,
                     guildId: this.guildId,
                     adapterCreator: this.voiceChannel.guild.voiceAdapterCreator,
                 });
-
-                // Aguardar conexão
-                this.connection.on(VoiceConnectionStatus.Ready, () => {
-                    console.log('Conectado ao canal de voz!');
-                });
-            }
-
-            // Criar player de áudio
-            if (!this.player) {
-                this.player = createAudioPlayer();
                 this.connection.subscribe(this.player);
             }
-
-            console.log('Tentando reproduzir áudio real...');
-            console.log('URL:', this.currentSong.url);
             
-            // Usar @distube/ytdl-core para obter stream
-            const stream = ytdl(this.currentSong.url, {
-                filter: 'audioonly',
-                highWaterMark: 1 << 25,
-                requestOptions: {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                    }
+            let stream;
+            if (song.source === 'youtube') {
+                stream = ytdl(song.url, {
+                    filter: 'audioonly',
+                    highWaterMark: 1 << 25,
+                    quality: this.quality === 'high' ? 'highestaudio' : 'lowestaudio'
+                });
+            } else {
+                // Para outras fontes, usar busca no YouTube
+                const searchResult = await search(song.title + ' ' + song.artist, { limit: 1 });
+                if (searchResult.length > 0) {
+                    stream = ytdl(searchResult[0].url, {
+                        filter: 'audioonly',
+                        highWaterMark: 1 << 25,
+                        quality: this.quality === 'high' ? 'highestaudio' : 'lowestaudio'
+                    });
+                } else {
+                    throw new Error('Não foi possível reproduzir a música');
                 }
-            });
-
-            console.log('Stream obtido com sucesso!');
-
-            // Criar resource de áudio
-            const resource = createAudioResource(stream, {
-                inputType: 'arbitrary'
-            });
-
-            // Reproduzir áudio
+            }
+            
+            const resource = createAudioResource(stream, { inlineVolume: true });
+            resource.volume.setVolume(this.volume / 100);
             this.player.play(resource);
-            this.player.volume = this.volume;
-
-            this.textChannel.send(`🎵 **Tocando:** ${this.currentSong.title}`);
-            this.textChannel.send(`🔗 **URL:** ${this.currentSong.url}`);
-
-            // Quando terminar, tocar próxima
-            this.player.on(AudioPlayerStatus.Idle, () => {
-                this.play();
-            });
-
+            
+            // Enviar embed da música atual
+            await this.sendNowPlayingEmbed();
+            
         } catch (error) {
-            console.error('Erro ao reproduzir música:', error);
-            this.textChannel.send('❌ Erro ao reproduzir a música! Tentando próxima...');
-            setTimeout(() => {
-                this.play();
-            }, 2000);
+            console.error('❌ Erro ao tocar música:', error);
+            await this.playNext();
         }
     }
-
-    pause() {
-        if (this.player && this.isPlaying) {
-            this.player.pause();
-            this.isPaused = true;
+    
+    async sendNowPlayingEmbed() {
+        const embed = new EmbedBuilder()
+            .setColor('#FF6B6B')
+            .setTitle('🎵 Tocando Agora')
+            .setDescription(`**${this.currentSong.title}**`)
+            .addFields(
+                { name: '🎤 Artista', value: this.currentSong.artist || 'Desconhecido', inline: true },
+                { name: '⏱️ Duração', value: this.currentSong.duration || 'Desconhecida', inline: true },
+                { name: '🔊 Volume', value: `${this.volume}%`, inline: true },
+                { name: '📱 Fonte', value: this.currentSong.source.toUpperCase(), inline: true },
+                { name: '🔄 Loop', value: this.loop === 'off' ? 'Desativado' : this.loop === 'song' ? 'Música' : 'Fila', inline: true },
+                { name: '🔀 Shuffle', value: this.shuffle ? 'Ativado' : 'Desativado', inline: true }
+            )
+            .setFooter({ text: `Fila: ${this.songs.length} música(s) • Mood: ${this.mood}` });
+        
+        if (this.currentSong.thumbnail) {
+            embed.setThumbnail(this.currentSong.thumbnail);
+        }
+        
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('pause_resume')
+                    .setLabel('⏯️')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('skip')
+                    .setLabel('⏭️')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('shuffle')
+                    .setLabel('🔀')
+                    .setStyle(this.shuffle ? ButtonStyle.Success : ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId('loop')
+                    .setLabel('🔁')
+                    .setStyle(this.loop !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId('queue')
+                    .setLabel('📝')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+        
+        try {
+            await this.textChannel.send({ embeds: [embed], components: [row] });
+        } catch (error) {
+            console.error('❌ Erro ao enviar embed:', error);
         }
     }
-
-    resume() {
-        if (this.player && this.isPaused) {
-            this.player.unpause();
-            this.isPaused = false;
+    
+    updateStats() {
+        if (!this.currentSong) return;
+        
+        const userId = this.currentSong.requestedBy;
+        if (!userStats.has(userId)) {
+            userStats.set(userId, { totalPlayed: 0, favoriteGenres: {}, history: [] });
         }
+        
+        const stats = userStats.get(userId);
+        stats.totalPlayed++;
+        stats.history.unshift(this.currentSong);
+        if (stats.history.length > 50) stats.history.pop();
+        
+        userStats.set(userId, stats);
     }
-
-    skip() {
-        if (this.player) {
-            this.player.stop();
+    
+    async getRecommendation() {
+        // Lógica simples de recomendação baseada no histórico
+        if (this.history.length === 0) return null;
+        
+        const lastSong = this.history[this.history.length - 1];
+        try {
+            const searchQuery = `${lastSong.artist} similar music`;
+            const results = await search(searchQuery, { limit: 5 });
+            if (results.length > 0) {
+                const randomResult = results[Math.floor(Math.random() * results.length)];
+                return {
+                    title: randomResult.title,
+                    artist: randomResult.channel?.name || 'Desconhecido',
+                    url: randomResult.url,
+                    duration: randomResult.durationFormatted,
+                    thumbnail: randomResult.thumbnails?.[0]?.url,
+                    source: 'youtube',
+                    requestedBy: 'autoplay'
+                };
+            }
+        } catch (error) {
+            console.error('❌ Erro ao buscar recomendação:', error);
         }
-    }
-
-    stop() {
-        if (this.player) {
-            this.player.stop();
-        }
-        this.songs = [];
-        this.isPlaying = false;
-        this.isPaused = false;
-        if (this.connection) {
-            this.connection.destroy();
-            this.connection = null;
-        }
-    }
-
-    setVolume(volume) {
-        this.volume = Math.max(0, Math.min(1, volume));
-        if (this.player) {
-            this.player.volume = this.volume;
-        }
+        
+        return null;
     }
 }
 
-// Evento de interação (slash commands)
-client.on(Events.InteractionCreate, async (interaction) => {
-    console.log('Interação recebida:', interaction.commandName);
+// Comandos Slash
+const commands = [
+    // Comandos básicos
+    new SlashCommandBuilder()
+        .setName('play')
+        .setDescription('Toca uma música do YouTube')
+        .addStringOption(option =>
+            option.setName('musica')
+                .setDescription('Nome da música ou URL do YouTube')
+                .setRequired(true)),
     
-    if (!interaction.isChatInputCommand()) return;
+    new SlashCommandBuilder()
+        .setName('playspotify')
+        .setDescription('Toca uma música do Spotify')
+        .addStringOption(option =>
+            option.setName('musica')
+                .setDescription('Nome da música ou URL do Spotify')
+                .setRequired(true)),
+    
+    new SlashCommandBuilder()
+        .setName('pause')
+        .setDescription('Pausa a música atual'),
+    
+    new SlashCommandBuilder()
+        .setName('resume')
+        .setDescription('Retoma a música pausada'),
+    
+    new SlashCommandBuilder()
+        .setName('skip')
+        .setDescription('Pula a música atual'),
+    
+    new SlashCommandBuilder()
+        .setName('stop')
+        .setDescription('Para a música e limpa a fila'),
+    
+    new SlashCommandBuilder()
+        .setName('queue')
+        .setDescription('Mostra a fila de músicas'),
+    
+    new SlashCommandBuilder()
+        .setName('volume')
+        .setDescription('Ajusta o volume')
+        .addIntegerOption(option =>
+            option.setName('nivel')
+                .setDescription('Nível do volume (0-100)')
+                .setRequired(true)
+                .setMinValue(0)
+                .setMaxValue(100)),
+    
+    // Sistema de Playlists
+    new SlashCommandBuilder()
+        .setName('playlist')
+        .setDescription('Gerenciar playlists')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('create')
+                .setDescription('Criar uma nova playlist')
+                .addStringOption(option =>
+                    option.setName('nome')
+                        .setDescription('Nome da playlist')
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('add')
+                .setDescription('Adicionar música à playlist')
+                .addStringOption(option =>
+                    option.setName('playlist')
+                        .setDescription('Nome da playlist')
+                        .setRequired(true))
+                .addStringOption(option =>
+                    option.setName('musica')
+                        .setDescription('Música para adicionar')
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('play')
+                .setDescription('Tocar uma playlist')
+                .addStringOption(option =>
+                    option.setName('nome')
+                        .setDescription('Nome da playlist')
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('list')
+                .setDescription('Listar suas playlists'))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('delete')
+                .setDescription('Deletar uma playlist')
+                .addStringOption(option =>
+                    option.setName('nome')
+                        .setDescription('Nome da playlist')
+                        .setRequired(true))),
+    
+    // Sistema de Favoritos
+    new SlashCommandBuilder()
+        .setName('fav')
+        .setDescription('Gerenciar favoritos')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('add')
+                .setDescription('Adicionar música atual aos favoritos'))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('play')
+                .setDescription('Tocar músicas favoritas aleatoriamente'))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('list')
+                .setDescription('Listar suas músicas favoritas')),
+    
+    // Sistema de Humores
+    new SlashCommandBuilder()
+        .setName('mood')
+        .setDescription('Definir humor musical')
+        .addStringOption(option =>
+            option.setName('tipo')
+                .setDescription('Tipo de humor')
+                .setRequired(true)
+                .addChoices(
+                    { name: '😌 Chill', value: 'chill' },
+                    { name: '🎯 Focus', value: 'focus' },
+                    { name: '🎮 Gaming', value: 'gaming' },
+                    { name: '🎉 Party', value: 'party' },
+                    { name: '💤 Sleep', value: 'sleep' },
+                    { name: '🏃 Workout', value: 'workout' }
+                )),
+    
+    // Timer e Agendamento
+    new SlashCommandBuilder()
+        .setName('sleep')
+        .setDescription('Para a música após um tempo')
+        .addIntegerOption(option =>
+            option.setName('minutos')
+                .setDescription('Minutos até parar')
+                .setRequired(true)
+                .setMinValue(1)
+                .setMaxValue(180)),
+    
+    new SlashCommandBuilder()
+        .setName('pomodoro')
+        .setDescription('Inicia sessão Pomodoro (25min música, 5min pausa)')
+        .addIntegerOption(option =>
+            option.setName('ciclos')
+                .setDescription('Número de ciclos')
+                .setRequired(false)
+                .setMinValue(1)
+                .setMaxValue(8)),
+    
+    // Rádio 24/7
+    new SlashCommandBuilder()
+        .setName('radio')
+        .setDescription('Controlar rádio 24/7')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('start')
+                .setDescription('Iniciar rádio')
+                .addStringOption(option =>
+                    option.setName('tipo')
+                        .setDescription('Tipo de rádio')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: '🎵 Lo-Fi', value: 'lofi' },
+                            { name: '🎮 Gaming', value: 'gaming' },
+                            { name: '💼 Work', value: 'work' },
+                            { name: '🌙 Chill', value: 'chill' }
+                        )))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('stop')
+                .setDescription('Parar rádio')),
+    
+    // Configurações
+    new SlashCommandBuilder()
+        .setName('shuffle')
+        .setDescription('Ativa/desativa modo aleatório'),
+    
+    new SlashCommandBuilder()
+        .setName('loop')
+        .setDescription('Controlar repetição')
+        .addStringOption(option =>
+            option.setName('modo')
+                .setDescription('Modo de repetição')
+                .setRequired(false)
+                .addChoices(
+                    { name: '❌ Desativado', value: 'off' },
+                    { name: '🔂 Música', value: 'song' },
+                    { name: '🔁 Fila', value: 'queue' }
+                )),
+    
+    new SlashCommandBuilder()
+        .setName('autoplay')
+        .setDescription('Ativa/desativa reprodução automática'),
+    
+    new SlashCommandBuilder()
+        .setName('quality')
+        .setDescription('Ajustar qualidade do áudio')
+        .addStringOption(option =>
+            option.setName('nivel')
+                .setDescription('Nível de qualidade')
+                .setRequired(true)
+                .addChoices(
+                    { name: '🔊 Alta', value: 'high' },
+                    { name: '🔉 Baixa', value: 'low' },
+                    { name: '🔄 Auto', value: 'auto' }
+                )),
+    
+    // Estatísticas
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Mostra suas estatísticas musicais'),
+    
+    new SlashCommandBuilder()
+        .setName('nowplaying')
+        .setDescription('Mostra a música atual'),
+    
+    new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('Mostra todos os comandos disponíveis')
+];
 
-    const { commandName, options } = interaction;
+// Registrar comandos
+const rest = new REST({ version: '10' }).setToken(config.token);
 
+(async () => {
     try {
-        switch (commandName) {
-            case 'play':
-                const query = options.getString('musica');
-                if (!query) {
-                    return await interaction.reply('❌ Por favor, forneça o nome da música!');
-                }
-
-                const voiceChannel = interaction.member.voice.channel;
-                if (!voiceChannel) {
-                    return await interaction.reply('❌ Você precisa estar em um canal de voz!');
-                }
-
-                // Verificar permissões do bot
-                const botMember = interaction.guild.members.cache.get(client.user.id);
-                if (!botMember.permissionsIn(voiceChannel).has(['Connect', 'Speak'])) {
-                    return await interaction.reply('❌ O bot não tem permissão para conectar e falar neste canal!');
-                }
-
-                try {
-                    console.log('Buscando música:', query);
-                    
-                    // Buscar música usando play-dl
-                    const results = await search(query, { limit: 1 });
-                    if (results.length === 0) {
-                        return await interaction.reply('❌ Nenhuma música encontrada!');
-                    }
-                    
-                    const video = results[0];
-                    const song = {
-                        title: video.title,
-                        url: video.url,
-                        duration: video.durationInSec || 180
-                    };
-
-                    console.log('Música encontrada:', song.title);
-
-                    let queue = musicQueues.get(interaction.guild.id);
-                    if (!queue) {
-                        queue = new MusicQueue(interaction.guild.id, voiceChannel, interaction.channel);
-                        musicQueues.set(interaction.guild.id, queue);
-                    }
-
-                    await queue.addSong(song);
-                    await interaction.reply(`✅ **${song.title}** adicionada à fila!`);
-
-                } catch (error) {
-                    console.error('Erro no comando play:', error);
-                    await interaction.reply('❌ Erro ao buscar a música!');
-                }
-                break;
-
-            case 'pause':
-                const pauseQueue = musicQueues.get(interaction.guild.id);
-                if (!pauseQueue || !pauseQueue.isPlaying) {
-                    return await interaction.reply('❌ Nenhuma música tocando!');
-                }
-                pauseQueue.pause();
-                await interaction.reply('⏸️ Música pausada!');
-                break;
-
-            case 'resume':
-                const resumeQueue = musicQueues.get(interaction.guild.id);
-                if (!resumeQueue || !resumeQueue.isPaused) {
-                    return await interaction.reply('❌ Nenhuma música pausada!');
-                }
-                resumeQueue.resume();
-                await interaction.reply('▶️ Música retomada!');
-                break;
-
-            case 'skip':
-                const skipQueue = musicQueues.get(interaction.guild.id);
-                if (!skipQueue || !skipQueue.isPlaying) {
-                    return await interaction.reply('❌ Nenhuma música tocando!');
-                }
-                skipQueue.skip();
-                await interaction.reply('⏭️ Música pulada!');
-                break;
-
-            case 'stop':
-                const stopQueue = musicQueues.get(interaction.guild.id);
-                if (!stopQueue) {
-                    return await interaction.reply('❌ Nenhuma música tocando!');
-                }
-                stopQueue.stop();
-                await interaction.reply('⏹️ Música parada e fila limpa!');
-                break;
-
-            case 'queue':
-                const queueQueue = musicQueues.get(interaction.guild.id);
-                if (!queueQueue || queueQueue.songs.length === 0) {
-                    return await interaction.reply('❌ Fila vazia!');
-                }
-
-                let queueText = '📋 **Fila de Músicas:**\n';
-                queueQueue.songs.forEach((song, index) => {
-                    queueText += `${index + 1}. ${song.title}\n`;
-                });
-
-                await interaction.reply(queueText);
-                break;
-
-            case 'volume':
-                const volume = options.getInteger('volume');
-                const volumeQueue = musicQueues.get(interaction.guild.id);
-                if (!volumeQueue) {
-                    return await interaction.reply('❌ Nenhuma música tocando!');
-                }
-
-                if (volume === null) {
-                    return await interaction.reply(`🔊 Volume atual: ${Math.round(volumeQueue.volume * 100)}%`);
-                }
-
-                if (volume < 0 || volume > 100) {
-                    return await interaction.reply('❌ Volume deve ser um número entre 0 e 100!');
-                }
-
-                volumeQueue.setVolume(volume / 100);
-                await interaction.reply(`🔊 Volume alterado para ${volume}%!`);
-                break;
-
-            case 'help':
-                const helpText = `🎵 Caffonía - Bot de Música para Discord
-
-/play <música> - Toca uma música
-/pause - Pausa a música
-/resume - Retoma a música
-/skip - Pula a música atual
-/stop - Para a música e limpa a fila
-/queue - Mostra a fila de músicas
-/volume <0-100> - Ajusta o volume
-/help - Mostra esta ajuda
-
-Status: Bot funcionando com áudio real! ✅
-API: @discordjs/voice + @distube/ytdl-core ✅
-Conexão: Entra em canais de voz ✅
-Áudio: Reprodução real funcionando ✅
-
-Desenvolvido com ❤️ por Daniel Tomaz`;
-                await interaction.reply(helpText);
-                break;
-        }
-    } catch (error) {
-        console.error('Erro ao executar comando:', error);
-        try {
-            if (interaction.replied || interaction.deferred) {
-                await interaction.followUp('❌ Erro ao executar o comando!');
-            } else {
-                await interaction.reply('❌ Erro ao executar o comando!');
-            }
-        } catch (replyError) {
-            console.error('Erro ao responder interação:', replyError);
-        }
-    }
-});
-
-// Evento de ready
-client.once(Events.ClientReady, async () => {
-    console.log(`🎵 Caffonía está online! Logado como ${client.user.tag}`);
-    client.user.setActivity('música no Discord', { type: ActivityType.Listening });
-    
-    // Registrar slash commands
-    const { REST, Routes } = require('discord.js');
-    const rest = new REST({ version: '10' }).setToken(config.token);
-    
-    const commands = [
-        {
-            name: 'play',
-            description: 'Toca uma música',
-            options: [
-                {
-                    name: 'musica',
-                    description: 'Nome da música',
-                    type: 3,
-                    required: true
-                }
-            ]
-        },
-        {
-            name: 'pause',
-            description: 'Pausa a música atual'
-        },
-        {
-            name: 'resume',
-            description: 'Retoma a música pausada'
-        },
-        {
-            name: 'skip',
-            description: 'Pula para a próxima música'
-        },
-        {
-            name: 'stop',
-            description: 'Para a música e limpa a fila'
-        },
-        {
-            name: 'queue',
-            description: 'Mostra a fila de músicas'
-        },
-        {
-            name: 'volume',
-            description: 'Ajusta o volume',
-            options: [
-                {
-                    name: 'volume',
-                    description: 'Volume de 0 a 100',
-                    type: 4,
-                    required: false
-                }
-            ]
-        },
-        {
-            name: 'help',
-            description: 'Mostra a lista de comandos'
-        }
-    ];
-    
-    try {
-        console.log('🔄 Registrando slash commands...');
+        console.log('🔄 Registrando comandos slash...');
         await rest.put(
             Routes.applicationCommands(config.clientId),
             { body: commands }
         );
-        console.log('✅ Slash commands registrados com sucesso!');
+        console.log('✅ Comandos slash registrados com sucesso!');
     } catch (error) {
-        console.error('❌ Erro ao registrar slash commands:', error);
+        console.error('❌ Erro ao registrar comandos:', error);
+    }
+})();
+
+// Função para buscar música no YouTube
+async function searchYoutube(query) {
+    try {
+        const results = await search(query, { limit: 1 });
+        if (results.length === 0) {
+            throw new Error('Nenhuma música encontrada!');
+        }
+        
+        const result = results[0];
+        return {
+            title: result.title,
+            artist: result.channel?.name || 'Desconhecido',
+            url: result.url,
+            duration: result.durationFormatted,
+            thumbnail: result.thumbnails?.[0]?.url,
+            source: 'youtube'
+        };
+    } catch (error) {
+        console.error('❌ Erro ao buscar no YouTube:', error);
+        throw error;
+    }
+}
+
+// Função para buscar música no Spotify
+async function searchSpotify(query) {
+    if (!spotifyApi) {
+        throw new Error('Spotify não configurado!');
+    }
+    
+    try {
+        const results = await spotifyApi.searchTracks(query, { limit: 1 });
+        if (results.body.tracks.items.length === 0) {
+            throw new Error('Nenhuma música encontrada no Spotify!');
+        }
+        
+        const track = results.body.tracks.items[0];
+        return {
+            title: track.name,
+            artist: track.artists.map(a => a.name).join(', '),
+            url: track.external_urls.spotify,
+            duration: `${Math.floor(track.duration_ms / 60000)}:${String(Math.floor((track.duration_ms % 60000) / 1000)).padStart(2, '0')}`,
+            thumbnail: track.album.images[0]?.url,
+            source: 'spotify',
+            spotifyId: track.id
+        };
+    } catch (error) {
+        console.error('❌ Erro ao buscar no Spotify:', error);
+        throw error;
+    }
+}
+
+// Função para obter recomendações por humor
+function getMoodPlaylist(mood) {
+    const moodPlaylists = {
+        chill: ['lofi hip hop', 'chill music', 'relaxing music', 'ambient music'],
+        focus: ['study music', 'concentration music', 'instrumental music', 'classical music'],
+        gaming: ['gaming music', 'electronic music', 'synthwave', 'epic music'],
+        party: ['party music', 'dance music', 'pop hits', 'upbeat music'],
+        sleep: ['sleep music', 'calm music', 'nature sounds', 'meditation music'],
+        workout: ['workout music', 'motivational music', 'high energy music', 'gym music']
+    };
+    
+    return moodPlaylists[mood] || moodPlaylists.chill;
+}
+
+// Carregar dados do usuário
+async function loadUserData() {
+    try {
+        const playlistsData = await fs.readFile(path.join(__dirname, 'data', 'playlists.json'), 'utf8');
+        const playlists = JSON.parse(playlistsData);
+        for (const [userId, userPlaylists] of Object.entries(playlists)) {
+            userPlaylists.set(userId, userPlaylists);
+        }
+    } catch (error) {
+        console.log('📁 Criando arquivo de playlists...');
+    }
+    
+    try {
+        const favoritesData = await fs.readFile(path.join(__dirname, 'data', 'favorites.json'), 'utf8');
+        const favorites = JSON.parse(favoritesData);
+        for (const [userId, userFavs] of Object.entries(favorites)) {
+            userFavorites.set(userId, userFavs);
+        }
+    } catch (error) {
+        console.log('📁 Criando arquivo de favoritos...');
+    }
+}
+
+// Salvar dados do usuário
+async function saveUserData() {
+    try {
+        await fs.mkdir(path.join(__dirname, 'data'), { recursive: true });
+        
+        const playlistsObj = Object.fromEntries(userPlaylists);
+        await fs.writeFile(path.join(__dirname, 'data', 'playlists.json'), JSON.stringify(playlistsObj, null, 2));
+        
+        const favoritesObj = Object.fromEntries(userFavorites);
+        await fs.writeFile(path.join(__dirname, 'data', 'favorites.json'), JSON.stringify(favoritesObj, null, 2));
+        
+        console.log('💾 Dados salvos com sucesso!');
+    } catch (error) {
+        console.error('❌ Erro ao salvar dados:', error);
+    }
+}
+
+// Eventos do cliente
+client.once(Events.ClientReady, async () => {
+    console.log(`✅ ${client.user.tag} está online!`);
+    console.log(`🎵 Bot Caffonía Enhanced carregado com sucesso!`);
+    console.log(`📊 Funcionalidades ativas:`);
+    console.log(`   - YouTube: ${config.features.enableYoutube ? '✅' : '❌'}`);
+    console.log(`   - Spotify: ${config.features.enableSpotify ? '✅' : '❌'}`);
+    console.log(`   - Playlists: ${config.features.enablePlaylists ? '✅' : '❌'}`);
+    console.log(`   - Rádio 24/7: ${config.features.enableRadio ? '✅' : '❌'}`);
+    console.log(`   - Timer: ${config.features.enableTimer ? '✅' : '❌'}`);
+    
+    await loadUserData();
+    
+    // Salvar dados a cada 5 minutos
+    setInterval(saveUserData, 5 * 60 * 1000);
+});
+
+// Event listener para interações
+client.on(Events.InteractionCreate, async interaction => {
+    if (interaction.isChatInputCommand()) {
+        await handleSlashCommand(interaction);
+    } else if (interaction.isButton()) {
+        await handleButtonInteraction(interaction);
     }
 });
 
-// Evento de desconexão de voz
-client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-    const queue = musicQueues.get(newState.guild.id);
-    if (queue && queue.voiceChannel.id === newState.channelId) {
-        const members = queue.voiceChannel.members.filter(member => !member.user.bot);
-        if (members.size === 0) {
-            queue.stop();
-            musicQueues.delete(newState.guild.id);
+// Função para lidar com comandos slash
+async function handleSlashCommand(interaction) {
+    const { commandName } = interaction;
+    const guildId = interaction.guildId;
+    const member = interaction.member;
+    const userId = interaction.user.id;
+
+    try {
+        switch (commandName) {
+            case 'play':
+                await handlePlayCommand(interaction, 'youtube');
+                break;
+                
+            case 'playspotify':
+                await handlePlayCommand(interaction, 'spotify');
+                break;
+                
+            case 'pause':
+                await handlePauseCommand(interaction);
+                break;
+                
+            case 'resume':
+                await handleResumeCommand(interaction);
+                break;
+                
+            case 'skip':
+                await handleSkipCommand(interaction);
+                break;
+                
+            case 'stop':
+                await handleStopCommand(interaction);
+                break;
+                
+            case 'queue':
+                await handleQueueCommand(interaction);
+                break;
+                
+            case 'volume':
+                await handleVolumeCommand(interaction);
+                break;
+                
+            case 'playlist':
+                await handlePlaylistCommand(interaction);
+                break;
+                
+            case 'fav':
+                await handleFavoriteCommand(interaction);
+                break;
+                
+            case 'mood':
+                await handleMoodCommand(interaction);
+                break;
+                
+            case 'sleep':
+                await handleSleepCommand(interaction);
+                break;
+                
+            case 'pomodoro':
+                await handlePomodoroCommand(interaction);
+                break;
+                
+            case 'radio':
+                await handleRadioCommand(interaction);
+                break;
+                
+            case 'shuffle':
+                await handleShuffleCommand(interaction);
+                break;
+                
+            case 'loop':
+                await handleLoopCommand(interaction);
+                break;
+                
+            case 'autoplay':
+                await handleAutoplayCommand(interaction);
+                break;
+                
+            case 'quality':
+                await handleQualityCommand(interaction);
+                break;
+                
+            case 'stats':
+                await handleStatsCommand(interaction);
+                break;
+                
+            case 'nowplaying':
+                await handleNowPlayingCommand(interaction);
+                break;
+                
+            case 'help':
+                await handleHelpCommand(interaction);
+                break;
+                
+            default:
+                await interaction.reply('❌ Comando não reconhecido!');
+        }
+    } catch (error) {
+        console.error('❌ Erro no comando:', error);
+        const errorMessage = '❌ Ocorreu um erro ao executar o comando!';
+        
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply(errorMessage);
+        } else {
+            await interaction.followUp(errorMessage);
         }
     }
-});
+}
+
+// Importar handlers
+const {
+    handlePauseCommand,
+    handleResumeCommand,
+    handleSkipCommand,
+    handleStopCommand,
+    handleVolumeCommand,
+    handleQueueCommand,
+    handlePlaylistCommand,
+    handleFavoriteCommand,
+    handleMoodCommand,
+    handleSleepCommand,
+    handlePomodoroCommand,
+    handleRadioCommand,
+    handleShuffleCommand,
+    handleLoopCommand,
+    handleAutoplayCommand,
+    handleQualityCommand,
+    handleStatsCommand,
+    handleNowPlayingCommand,
+    handleHelpCommand,
+    handleButtonInteraction
+} = require('./handlers');
+
+// Implementação do handler de play
+async function handlePlayCommand(interaction, source = 'youtube') {
+    const music = interaction.options.getString('musica');
+    const member = interaction.member;
+    const guildId = interaction.guildId;
+    
+    if (!member.voice.channel) {
+        await interaction.reply('❌ Você precisa estar em um canal de voz!');
+        return;
+    }
+    
+    const permissions = member.voice.channel.permissionsFor(interaction.guild.members.me);
+    if (!permissions.has('Connect') || !permissions.has('Speak')) {
+        await interaction.reply('❌ Eu não tenho permissão para conectar ou falar neste canal!');
+        return;
+    }
+    
+    await interaction.deferReply();
+    
+    try {
+        let song;
+        
+        if (source === 'spotify' && config.features.enableSpotify) {
+            song = await searchSpotify(music);
+        } else {
+            song = await searchYoutube(music);
+        }
+        
+        song.requestedBy = interaction.user.id;
+        
+        let queue = musicQueues.get(guildId);
+        if (!queue) {
+            queue = new EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
+            musicQueues.set(guildId, queue);
+        }
+        
+        await queue.addSong(song);
+        
+        if (queue.currentSong && queue.currentSong !== song) {
+            const embed = new EmbedBuilder()
+                .setColor('#4ECDC4')
+                .setTitle('✅ Música Adicionada à Fila')
+                .setDescription(`**${song.title}**`)
+                .addFields(
+                    { name: '🎤 Artista', value: song.artist, inline: true },
+                    { name: '⏱️ Duração', value: song.duration, inline: true },
+                    { name: '📱 Fonte', value: song.source.toUpperCase(), inline: true },
+                    { name: '📝 Posição na Fila', value: `${queue.songs.length + 1}`, inline: true }
+                );
+            
+            if (song.thumbnail) {
+                embed.setThumbnail(song.thumbnail);
+            }
+            
+            await interaction.editReply({ embeds: [embed] });
+        } else {
+            await interaction.editReply('🎵 Iniciando reprodução...');
+        }
+        
+    } catch (error) {
+        await interaction.editReply(`❌ Erro ao buscar música: ${error.message}`);
+    }
+}
+
+// Implementação dos outros handlers...
+// (Continuarei implementando todos os handlers na próxima mensagem devido ao limite de caracteres)
 
 // Login do bot
 client.login(config.token);

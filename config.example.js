@@ -17,6 +17,26 @@ module.exports = {
         searchTimeout: 10000,
         
         // Máximo de músicas na fila
-        maxQueueSize: 50
+        maxQueueSize: 100,
+        
+        // Máximo de músicas por playlist
+        maxPlaylistSize: 50
+    },
+    
+    // Configurações do Spotify
+    spotify: {
+        clientId: 'seu_spotify_client_id_aqui',
+        clientSecret: 'seu_spotify_client_secret_aqui'
+    },
+    
+    // Funcionalidades habilitadas
+    features: {
+        enableSpotify: true,
+        enableYoutube: true,
+        enablePlaylists: true,
+        enableRadio: true,
+        enableTimer: true,
+        enableFavorites: true,
+        enableMoodSystem: true
     }
 };
