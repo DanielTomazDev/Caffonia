@@ -2,10 +2,13 @@
 
 const { EmbedBuilder } = require('discord.js');
 
+// As variáveis globais serão definidas pelo index.js
+// Elas estarão disponíveis como global.musicQueues, global.userPlaylists, etc.
+
 // Handler para comando de pausa
 async function handlePauseCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue || !queue.currentSong) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -19,7 +22,7 @@ async function handlePauseCommand(interaction) {
 // Handler para comando de resume
 async function handleResumeCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue || !queue.currentSong) {
         await interaction.reply('❌ Nenhuma música pausada!');
@@ -33,7 +36,7 @@ async function handleResumeCommand(interaction) {
 // Handler para comando de skip
 async function handleSkipCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue || !queue.currentSong) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -48,7 +51,7 @@ async function handleSkipCommand(interaction) {
 // Handler para comando de stop
 async function handleStopCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -60,7 +63,7 @@ async function handleStopCommand(interaction) {
     if (queue.connection) {
         queue.connection.destroy();
     }
-    musicQueues.delete(guildId);
+    global.musicQueues.delete(guildId);
     
     await interaction.reply('⏹️ Música parada e fila limpa!');
 }
@@ -69,7 +72,7 @@ async function handleStopCommand(interaction) {
 async function handleVolumeCommand(interaction) {
     const volume = interaction.options.getInteger('nivel');
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue || !queue.currentSong) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -87,7 +90,7 @@ async function handleVolumeCommand(interaction) {
 // Handler para comando de fila
 async function handleQueueCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue || (!queue.currentSong && queue.songs.length === 0)) {
         await interaction.reply('📝 Fila vazia!');
@@ -126,11 +129,11 @@ async function handlePlaylistCommand(interaction) {
     const subcommand = interaction.options.getSubcommand();
     const userId = interaction.user.id;
     
-    if (!userPlaylists.has(userId)) {
-        userPlaylists.set(userId, {});
+    if (!global.userPlaylists.has(userId)) {
+        global.userPlaylists.set(userId, {});
     }
     
-    const userPlaylistsData = userPlaylists.get(userId);
+    const userPlaylistsData = global.userPlaylists.get(userId);
     
     switch (subcommand) {
         case 'create':
@@ -164,15 +167,15 @@ async function handlePlaylistCommand(interaction) {
             await interaction.deferReply();
             
             try {
-                const song = await searchYoutube(musicToAdd);
+                const song = await global.searchYoutube(musicToAdd);
                 userPlaylistsData[playlistToAdd].songs.push(song);
                 
-                if (userPlaylistsData[playlistToAdd].songs.length > config.music.maxPlaylistSize) {
-                    await interaction.editReply(`❌ Playlist cheia! Máximo de ${config.music.maxPlaylistSize} músicas.`);
+                if (userPlaylistsData[playlistToAdd].songs.length > global.config.music.maxPlaylistSize) {
+                    await interaction.editReply(`❌ Playlist cheia! Máximo de ${global.config.music.maxPlaylistSize} músicas.`);
                     return;
                 }
                 
-                userPlaylists.set(userId, userPlaylistsData);
+                global.userPlaylists.set(userId, userPlaylistsData);
                 await interaction.editReply(`✅ **${song.title}** adicionada à playlist **${playlistToAdd}**!`);
             } catch (error) {
                 await interaction.editReply(`❌ Erro ao adicionar música: ${error.message}`);
@@ -202,15 +205,15 @@ async function handlePlaylistCommand(interaction) {
             await interaction.deferReply();
             
             const guildId = interaction.guildId;
-            let queue = musicQueues.get(guildId);
-            if (!queue) {
-                queue = new EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
-                musicQueues.set(guildId, queue);
+            let playlistQueue = global.musicQueues.get(guildId);
+            if (!playlistQueue) {
+                playlistQueue = new global.EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
+                global.musicQueues.set(guildId, playlistQueue);
             }
             
             for (const song of playlist.songs) {
                 song.requestedBy = userId;
-                await queue.addSong({ ...song });
+                await playlistQueue.addSong({ ...song });
             }
             
             await interaction.editReply(`🎵 Tocando playlist **${playlistToPlay}** com ${playlist.songs.length} música(s)!`);
@@ -256,15 +259,15 @@ async function handleFavoriteCommand(interaction) {
     const userId = interaction.user.id;
     const guildId = interaction.guildId;
     
-    if (!userFavorites.has(userId)) {
-        userFavorites.set(userId, []);
+    if (!global.userFavorites.has(userId)) {
+        global.userFavorites.set(userId, []);
     }
     
-    const favorites = userFavorites.get(userId);
+    const favorites = global.userFavorites.get(userId);
     
     switch (subcommand) {
         case 'add':
-            const queue = musicQueues.get(guildId);
+            const queue = global.musicQueues.get(guildId);
             if (!queue || !queue.currentSong) {
                 await interaction.reply('❌ Nenhuma música tocando!');
                 return;
@@ -279,7 +282,7 @@ async function handleFavoriteCommand(interaction) {
             }
             
             favorites.push({ ...currentSong });
-            userFavorites.set(userId, favorites);
+            global.userFavorites.set(userId, favorites);
             
             await interaction.reply(`❤️ **${currentSong.title}** adicionada aos favoritos!`);
             break;
@@ -298,10 +301,10 @@ async function handleFavoriteCommand(interaction) {
             
             await interaction.deferReply();
             
-            let queue = musicQueues.get(guildId);
-            if (!queue) {
-                queue = new EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
-                musicQueues.set(guildId, queue);
+            let favQueue = global.musicQueues.get(guildId);
+            if (!favQueue) {
+                favQueue = new global.EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
+                global.musicQueues.set(guildId, favQueue);
             }
             
             // Embaralhar favoritos
@@ -309,7 +312,7 @@ async function handleFavoriteCommand(interaction) {
             
             for (const song of shuffledFavorites) {
                 song.requestedBy = userId;
-                await queue.addSong({ ...song });
+                await favQueue.addSong({ ...song });
             }
             
             await interaction.editReply(`❤️ Tocando ${favorites.length} música(s) favorita(s) aleatoriamente!`);
@@ -347,20 +350,20 @@ async function handleMoodCommand(interaction) {
     
     await interaction.deferReply();
     
-    let queue = musicQueues.get(guildId);
-    if (!queue) {
-        queue = new EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
-        musicQueues.set(guildId, queue);
+    let moodQueue = global.musicQueues.get(guildId);
+    if (!moodQueue) {
+        moodQueue = new global.EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
+        global.musicQueues.set(guildId, moodQueue);
     }
     
-    queue.mood = mood;
+    moodQueue.mood = mood;
     
     // Buscar músicas do humor selecionado
-    const moodQueries = getMoodPlaylist(mood);
+    const moodQueries = global.getMoodPlaylist(mood);
     const randomQuery = moodQueries[Math.floor(Math.random() * moodQueries.length)];
     
     try {
-        const results = await search(randomQuery, { limit: 5 });
+        const results = await global.search(randomQuery, { limit: 5 });
         
         for (const result of results) {
             const song = {
@@ -373,7 +376,7 @@ async function handleMoodCommand(interaction) {
                 requestedBy: interaction.user.id
             };
             
-            await queue.addSong(song);
+            await moodQueue.addSong(song);
         }
         
         const moodEmojis = {
@@ -397,26 +400,26 @@ async function handleSleepCommand(interaction) {
     const guildId = interaction.guildId;
     
     // Cancelar timer anterior se existir
-    if (timers.has(guildId)) {
-        clearTimeout(timers.get(guildId));
+    if (global.timers.has(guildId)) {
+        clearTimeout(global.timers.get(guildId));
     }
     
     const timer = setTimeout(() => {
-        const queue = musicQueues.get(guildId);
+        const queue = global.musicQueues.get(guildId);
         if (queue) {
             queue.songs = [];
             queue.player.stop();
             if (queue.connection) {
                 queue.connection.destroy();
             }
-            musicQueues.delete(guildId);
+            global.musicQueues.delete(guildId);
             
             interaction.channel.send('💤 Timer de sleep ativado! Música parada.');
         }
-        timers.delete(guildId);
+        global.timers.delete(guildId);
     }, minutes * 60 * 1000);
     
-    timers.set(guildId, timer);
+    global.timers.set(guildId, timer);
     
     await interaction.reply(`⏰ Timer de sleep configurado para ${minutes} minuto(s)!`);
 }
@@ -431,7 +434,7 @@ async function handlePomodoroCommand(interaction) {
     let currentCycle = 0;
     
     const pomodoroInterval = setInterval(() => {
-        const queue = musicQueues.get(guildId);
+        const queue = global.musicQueues.get(guildId);
         
         if (currentCycle % 2 === 0) {
             // Período de trabalho (música)
@@ -483,10 +486,10 @@ async function handleRadioCommand(interaction) {
                 chill: 'https://www.youtube.com/watch?v=DWcJFNfaw9c' // Chill Music Radio
             };
             
-            let queue = musicQueues.get(guildId);
-            if (!queue) {
-                queue = new EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
-                musicQueues.set(guildId, queue);
+            let radioQueue = global.musicQueues.get(guildId);
+            if (!radioQueue) {
+                radioQueue = new global.EnhancedMusicQueue(guildId, member.voice.channel, interaction.channel);
+                global.musicQueues.set(guildId, radioQueue);
             }
             
             const radioSong = {
@@ -499,24 +502,24 @@ async function handleRadioCommand(interaction) {
                 isRadio: true
             };
             
-            queue.songs = [radioSong]; // Limpar fila e adicionar rádio
-            queue.loop = 'song'; // Loop infinito
+            radioQueue.songs = [radioSong]; // Limpar fila e adicionar rádio
+            radioQueue.loop = 'song'; // Loop infinito
             
-            await queue.playNext();
+            await radioQueue.playNext();
             
-            radioStations.set(guildId, radioType);
+            global.radioStations.set(guildId, radioType);
             
             await interaction.editReply(`📻 Rádio ${radioType.toUpperCase()} 24/7 iniciada!`);
             break;
             
         case 'stop':
-            if (radioStations.has(guildId)) {
-                const queue = musicQueues.get(guildId);
+            if (global.radioStations.has(guildId)) {
+                const queue = global.musicQueues.get(guildId);
                 if (queue) {
                     queue.loop = 'off';
                     queue.player.stop();
                 }
-                radioStations.delete(guildId);
+                global.radioStations.delete(guildId);
                 await interaction.reply('📻 Rádio parada!');
             } else {
                 await interaction.reply('❌ Nenhuma rádio ativa!');
@@ -528,7 +531,7 @@ async function handleRadioCommand(interaction) {
 // Handler para shuffle
 async function handleShuffleCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue) {
         await interaction.reply('❌ Nenhuma música na fila!');
@@ -552,7 +555,7 @@ async function handleShuffleCommand(interaction) {
 async function handleLoopCommand(interaction) {
     const mode = interaction.options.getString('modo');
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -580,7 +583,7 @@ async function handleLoopCommand(interaction) {
 // Handler para autoplay
 async function handleAutoplayCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -595,7 +598,7 @@ async function handleAutoplayCommand(interaction) {
 async function handleQualityCommand(interaction) {
     const quality = interaction.options.getString('nivel');
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -617,14 +620,14 @@ async function handleQualityCommand(interaction) {
 async function handleStatsCommand(interaction) {
     const userId = interaction.user.id;
     
-    if (!userStats.has(userId)) {
+    if (!global.userStats.has(userId)) {
         await interaction.reply('📊 Você ainda não tem estatísticas!');
         return;
     }
     
-    const stats = userStats.get(userId);
-    const favorites = userFavorites.get(userId) || [];
-    const playlists = Object.keys(userPlaylists.get(userId) || {});
+    const stats = global.userStats.get(userId);
+    const favorites = global.userFavorites.get(userId) || [];
+    const playlists = Object.keys(global.userPlaylists.get(userId) || {});
     
     const embed = new EmbedBuilder()
         .setColor('#95E1D3')
@@ -650,7 +653,7 @@ async function handleStatsCommand(interaction) {
 // Handler para música atual
 async function handleNowPlayingCommand(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue || !queue.currentSong) {
         await interaction.reply('❌ Nenhuma música tocando!');
@@ -722,7 +725,7 @@ async function handleHelpCommand(interaction) {
 // Handler para interações de botões
 async function handleButtonInteraction(interaction) {
     const guildId = interaction.guildId;
-    const queue = musicQueues.get(guildId);
+    const queue = global.musicQueues.get(guildId);
     
     if (!queue) {
         await interaction.reply({ content: '❌ Nenhuma música tocando!', ephemeral: true });

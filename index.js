@@ -36,15 +36,18 @@ const config = process.env.DISCORD_TOKEN ? {
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.GuildVoiceStates
     ]
 });
 
 // Cliente Spotify
 let spotifyApi = null;
-if (config.features.enableSpotify && config.spotify.clientId) {
+if (config.features.enableSpotify && 
+    config.spotify.clientId && 
+    config.spotify.clientId !== 'seu_spotify_client_id_aqui' &&
+    config.spotify.clientSecret && 
+    config.spotify.clientSecret !== 'seu_spotify_client_secret_aqui') {
+    
     spotifyApi = new SpotifyWebApi({
         clientId: config.spotify.clientId,
         clientSecret: config.spotify.clientSecret
@@ -57,8 +60,11 @@ if (config.features.enableSpotify && config.spotify.clientId) {
             console.log('✅ Spotify conectado!');
         })
         .catch(err => {
-            console.log('❌ Erro ao conectar com Spotify:', err);
+            console.log('⚠️ Spotify não configurado (credenciais inválidas)');
+            spotifyApi = null;
         });
+} else {
+    console.log('⚠️ Spotify não configurado (configure as credenciais no config.js)');
 }
 
 // Sistemas de dados
@@ -598,6 +604,24 @@ function getMoodPlaylist(mood) {
     return moodPlaylists[mood] || moodPlaylists.chill;
 }
 
+// Importar handlers agora que as variáveis globais estão definidas
+const handlers = require('./handlers');
+
+// Definir as variáveis globais para os handlers
+global.musicQueues = musicQueues;
+global.userPlaylists = userPlaylists;
+global.userFavorites = userFavorites;
+global.userStats = userStats;
+global.timers = timers;
+global.radioStations = radioStations;
+global.config = config;
+global.spotifyApi = spotifyApi;
+global.search = search;
+global.searchYoutube = searchYoutube;
+global.searchSpotify = searchSpotify;
+global.getMoodPlaylist = getMoodPlaylist;
+global.EnhancedMusicQueue = EnhancedMusicQueue;
+
 // Carregar dados do usuário
 async function loadUserData() {
     try {
@@ -660,7 +684,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isChatInputCommand()) {
         await handleSlashCommand(interaction);
     } else if (interaction.isButton()) {
-        await handleButtonInteraction(interaction);
+        await handlers.handleButtonInteraction(interaction);
     }
 });
 
@@ -682,79 +706,79 @@ async function handleSlashCommand(interaction) {
                 break;
                 
             case 'pause':
-                await handlePauseCommand(interaction);
+                await handlers.handlePauseCommand(interaction);
                 break;
                 
             case 'resume':
-                await handleResumeCommand(interaction);
+                await handlers.handleResumeCommand(interaction);
                 break;
                 
             case 'skip':
-                await handleSkipCommand(interaction);
+                await handlers.handleSkipCommand(interaction);
                 break;
                 
             case 'stop':
-                await handleStopCommand(interaction);
+                await handlers.handleStopCommand(interaction);
                 break;
                 
             case 'queue':
-                await handleQueueCommand(interaction);
+                await handlers.handleQueueCommand(interaction);
                 break;
                 
             case 'volume':
-                await handleVolumeCommand(interaction);
+                await handlers.handleVolumeCommand(interaction);
                 break;
                 
             case 'playlist':
-                await handlePlaylistCommand(interaction);
+                await handlers.handlePlaylistCommand(interaction);
                 break;
                 
             case 'fav':
-                await handleFavoriteCommand(interaction);
+                await handlers.handleFavoriteCommand(interaction);
                 break;
                 
             case 'mood':
-                await handleMoodCommand(interaction);
+                await handlers.handleMoodCommand(interaction);
                 break;
                 
             case 'sleep':
-                await handleSleepCommand(interaction);
+                await handlers.handleSleepCommand(interaction);
                 break;
                 
             case 'pomodoro':
-                await handlePomodoroCommand(interaction);
+                await handlers.handlePomodoroCommand(interaction);
                 break;
                 
             case 'radio':
-                await handleRadioCommand(interaction);
+                await handlers.handleRadioCommand(interaction);
                 break;
                 
             case 'shuffle':
-                await handleShuffleCommand(interaction);
+                await handlers.handleShuffleCommand(interaction);
                 break;
                 
             case 'loop':
-                await handleLoopCommand(interaction);
+                await handlers.handleLoopCommand(interaction);
                 break;
                 
             case 'autoplay':
-                await handleAutoplayCommand(interaction);
+                await handlers.handleAutoplayCommand(interaction);
                 break;
                 
             case 'quality':
-                await handleQualityCommand(interaction);
+                await handlers.handleQualityCommand(interaction);
                 break;
                 
             case 'stats':
-                await handleStatsCommand(interaction);
+                await handlers.handleStatsCommand(interaction);
                 break;
                 
             case 'nowplaying':
-                await handleNowPlayingCommand(interaction);
+                await handlers.handleNowPlayingCommand(interaction);
                 break;
                 
             case 'help':
-                await handleHelpCommand(interaction);
+                await handlers.handleHelpCommand(interaction);
                 break;
                 
             default:
@@ -772,29 +796,7 @@ async function handleSlashCommand(interaction) {
     }
 }
 
-// Importar handlers
-const {
-    handlePauseCommand,
-    handleResumeCommand,
-    handleSkipCommand,
-    handleStopCommand,
-    handleVolumeCommand,
-    handleQueueCommand,
-    handlePlaylistCommand,
-    handleFavoriteCommand,
-    handleMoodCommand,
-    handleSleepCommand,
-    handlePomodoroCommand,
-    handleRadioCommand,
-    handleShuffleCommand,
-    handleLoopCommand,
-    handleAutoplayCommand,
-    handleQualityCommand,
-    handleStatsCommand,
-    handleNowPlayingCommand,
-    handleHelpCommand,
-    handleButtonInteraction
-} = require('./handlers');
+// Importar handlers será feito após definir as variáveis globais
 
 // Implementação do handler de play
 async function handlePlayCommand(interaction, source = 'youtube') {
