@@ -154,8 +154,12 @@ class EnhancedMusicQueue {
             await this.playSong(nextSong);
         } else {
             this.currentSong = null;
-            if (this.connection) {
-                this.connection.destroy();
+            if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+                try {
+                    this.connection.destroy();
+                } catch (error) {
+                    console.log('⚠️ Conexão já foi destruída');
+                }
             }
             musicQueues.delete(this.guildId);
         }

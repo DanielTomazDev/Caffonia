@@ -25,6 +25,7 @@
     "ffmpeg-static": "^5.2.0",
     "libsodium-wrappers": "^0.7.15",
     "node-cron": "^4.2.1",
+    "opusscript": "^0.0.8",
     "play-dl": "^1.9.7",
     "spotify-web-api-node": "^5.0.2",
     "youtube-search-without-api-key": "^1.1.0"

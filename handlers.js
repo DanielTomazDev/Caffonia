@@ -1,6 +1,7 @@
 // Handlers complementares para o bot Caffonía Enhanced
 
 const { EmbedBuilder } = require('discord.js');
+const { VoiceConnectionStatus } = require('@discordjs/voice');
 
 // As variáveis globais serão definidas pelo index.js
 // Elas estarão disponíveis como global.musicQueues, global.userPlaylists, etc.
@@ -60,8 +61,12 @@ async function handleStopCommand(interaction) {
     
     queue.songs = [];
     queue.player.stop();
-    if (queue.connection) {
-        queue.connection.destroy();
+    if (queue.connection && queue.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+        try {
+            queue.connection.destroy();
+        } catch (error) {
+            console.log('⚠️ Conexão já foi destruída');
+        }
     }
     global.musicQueues.delete(guildId);
     
